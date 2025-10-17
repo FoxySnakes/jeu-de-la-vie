@@ -25,9 +25,20 @@ body {
 }
 
 #app {
+  position: relative;
   min-width: 100%;
   min-height: 100vh;
-  display: inline-block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 0 8rem;
+}
+
+.canvas-container {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 canvas#world {
@@ -35,6 +46,7 @@ canvas#world {
   background: transparent;
   cursor: crosshair;
   max-width: none;
+  margin: 0 auto;
 }
 
 .glass {
@@ -47,9 +59,9 @@ canvas#world {
 
 .toolbar {
   position: fixed;
-  top: 50%;
+  bottom: 0;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -229,9 +241,8 @@ canvas#world {
 
 @media (max-width: 900px) {
   .toolbar {
-    top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%);
+    transform: translateX(-50%);
     flex-wrap: wrap;
     justify-content: center;
   }
@@ -254,8 +265,7 @@ canvas#world {
 
   .toolbar {
     width: calc(100% - 2rem);
-    left: 1rem;
-    right: 1rem;
-    transform: translateY(-50%);
+    left: 50%;
+    transform: translateX(-50%);
   }
 }

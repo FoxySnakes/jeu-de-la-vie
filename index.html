@@ -8,22 +8,14 @@
 </head>
 <body>
   <div id="app">
-    <canvas id="world" aria-label="Grille du Jeu de la Vie" role="img"></canvas>
+    <div class="canvas-container">
+      <canvas id="world" aria-label="Grille du Jeu de la Vie" role="img"></canvas>
+    </div>
     <div class="toolbar glass" aria-label="Outils de simulation">
       <button id="play-pause" class="icon-button" title="Démarrer / Mettre en pause">▶️</button>
       <button id="step" class="icon-button" title="Avancer d'une génération">⏭️</button>
       <button id="reset" class="icon-button" title="Réinitialiser la grille">🔄</button>
       <button id="random" class="icon-button" title="Remplissage aléatoire">✨</button>
-      <div class="input-group" title="Vitesse de simulation">
-        <label for="speed" class="label">Vitesse (cycles/s)</label>
-        <input id="speed" type="number" min="1" max="240" value="30" step="1">
-      </div>
-      <div class="select-group" title="Charger un motif">
-        <label for="pattern" class="label">Motif</label>
-        <select id="pattern">
-          <option value="">Aucun</option>
-        </select>
-      </div>
       <button id="settings-toggle" class="icon-button" title="Afficher les paramètres">⚙️</button>
     </div>
     <div id="hud" class="hud glass">
@@ -47,8 +39,18 @@
           <input type="number" id="cell-size" min="1" max="128" value="10">
         </label>
         <label class="field">
-          <span>Densité aléatoire</span>
-          <input type="range" id="random-density" min="0" max="100" value="30">
+          <span>Vitesse (cycles/s)</span>
+          <input type="number" id="speed" min="1" max="240" value="30" step="1">
+        </label>
+        <label class="field">
+          <span>Densité aléatoire (%)</span>
+          <input type="number" id="random-density" min="0" max="100" value="30" step="1">
+        </label>
+        <label class="field">
+          <span>Motif</span>
+          <select id="pattern">
+            <option value="">Aucun</option>
+          </select>
         </label>
         <label class="field">
           <span>Style d'effet</span>
