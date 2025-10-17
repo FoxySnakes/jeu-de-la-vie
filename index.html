@@ -14,13 +14,9 @@
       <button id="step" class="icon-button" title="Avancer d'une génération">⏭️</button>
       <button id="reset" class="icon-button" title="Réinitialiser la grille">🔄</button>
       <button id="random" class="icon-button" title="Remplissage aléatoire">✨</button>
-      <div class="slider-group" title="Vitesse de simulation">
-        <label for="speed" class="label">Vitesse</label>
-        <input id="speed" type="range" min="1" max="120" value="30">
-      </div>
-      <div class="slider-group" title="Zoom">
-        <label for="zoom" class="label">Zoom</label>
-        <input id="zoom" type="range" min="1" max="80" value="10">
+      <div class="input-group" title="Vitesse de simulation">
+        <label for="speed" class="label">Vitesse (cycles/s)</label>
+        <input id="speed" type="number" min="1" max="240" value="30" step="1">
       </div>
       <div class="select-group" title="Charger un motif">
         <label for="pattern" class="label">Motif</label>

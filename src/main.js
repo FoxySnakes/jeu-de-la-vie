@@ -1,7 +1,7 @@
 const GRID_WIDTH = 512;
 const GRID_HEIGHT = 512;
 const DEFAULT_SPEED = 30;
-const DEFAULT_ZOOM = 10;
+const CELL_SCALE = 10;
 const POPULATION_UPDATE_INTERVAL = 10;
 
 const canvas = document.getElementById('world');
@@ -33,8 +33,7 @@ const playPauseBtn = document.getElementById('play-pause');
 const stepBtn = document.getElementById('step');
 const resetBtn = document.getElementById('reset');
 const randomBtn = document.getElementById('random');
-const speedSlider = document.getElementById('speed');
-const zoomSlider = document.getElementById('zoom');
+const speedInput = document.getElementById('speed');
 const generationLabel = document.getElementById('generation');
 const populationLabel = document.getElementById('population');
 const dimensionsLabel = document.getElementById('dimensions');
@@ -45,6 +44,7 @@ const settingsClose = document.getElementById('settings-close');
 const widthField = document.getElementById('grid-width');
 const heightField = document.getElementById('grid-height');
 const randomDensitySlider = document.getElementById('random-density');
+const styleModeSelect = document.getElementById('style-mode');
 
 const quadVao = createFullscreenQuad();
 
@@ -99,7 +99,7 @@ precision highp float;
 
 uniform sampler2D uState;
 uniform ivec2 uGridSize;
-uniform float uZoom;
+uniform float uCellSize;
 uniform float uPixelRatio;
 
 layout(location = 0) out vec4 fragColor;
@@ -118,16 +118,18 @@ float gridMask(vec2 uv, float thickness) {
 
 void main() {
   vec2 pixel = gl_FragCoord.xy / uPixelRatio;
-  vec2 cellPos = pixel / max(uZoom, 0.0001);
+  vec2 cellPos = pixel / max(uCellSize, 0.0001);
   ivec2 cell = ivec2(floor(cellPos));
   if (cell.x < 0 || cell.y < 0 || cell.x >= uGridSize.x || cell.y >= uGridSize.y) {
     fragColor = vec4(BACKGROUND, 1.0);
     return;
   }
 
-  float state = texelFetch(uState, cell, 0).r;
+  ivec2 storageCoord = ivec2(cell.x, uGridSize.y - 1 - cell.y);
+  float state = texelFetch(uState, storageCoord, 0).r;
   vec2 uv = fract(cellPos);
-  float grid = gridMask(uv, 0.02 + 0.12 / max(uZoom, 1.0));
+  float thickness = clamp(1.0 / max(uCellSize, 1.0), 0.01, 0.12);
+  float grid = gridMask(uv, thickness);
   vec3 color = mix(GRID_LINE, BACKGROUND, grid);
 
   if (state > 0.5) {
@@ -154,13 +156,12 @@ const simUniforms = {
 const renderUniforms = {
   uState: gl.getUniformLocation(renderProgram, 'uState'),
   uGridSize: gl.getUniformLocation(renderProgram, 'uGridSize'),
-  uZoom: gl.getUniformLocation(renderProgram, 'uZoom'),
+  uCellSize: gl.getUniformLocation(renderProgram, 'uCellSize'),
   uPixelRatio: gl.getUniformLocation(renderProgram, 'uPixelRatio'),
 };
 
 let gridWidth = GRID_WIDTH;
 let gridHeight = GRID_HEIGHT;
-let zoom = DEFAULT_ZOOM;
 let speed = DEFAULT_SPEED;
 let running = false;
 let generation = 0;
@@ -168,6 +169,9 @@ let population = 0;
 let frameCounter = 0;
 let accumulator = 0;
 let lastFrameTime = performance.now();
+
+let displayWidth = GRID_WIDTH * CELL_SCALE;
+let displayHeight = GRID_HEIGHT * CELL_SCALE;
 
 let stateTextures = [];
 let stateFramebuffers = [];
@@ -183,12 +187,8 @@ if (dimensionsLabel) {
   dimensionsLabel.textContent = `${gridWidth} × ${gridHeight}`;
 }
 
-if (speedSlider) {
-  speedSlider.value = String(DEFAULT_SPEED);
-}
-
-if (zoomSlider) {
-  zoomSlider.value = String(DEFAULT_ZOOM);
+if (speedInput) {
+  speedInput.value = String(DEFAULT_SPEED);
 }
 
 if (widthField) {
@@ -208,17 +208,24 @@ if (settingsPanel) {
 }
 
 playPauseBtn?.addEventListener('click', () => {
+  if (!running && population === 0) {
+    return;
+  }
   running = !running;
   if (running) {
     lastFrameTime = performance.now();
+  } else {
+    accumulator = 0;
   }
   updatePlayPauseVisual();
 });
 
 stepBtn?.addEventListener('click', () => {
+  if (population === 0) {
+    return;
+  }
   if (running) {
-    running = false;
-    updatePlayPauseVisual();
+    pauseSimulation();
   }
   performSimulationStep();
   renderFrame();
@@ -226,8 +233,7 @@ stepBtn?.addEventListener('click', () => {
 });
 
 resetBtn?.addEventListener('click', () => {
-  running = false;
-  updatePlayPauseVisual();
+  pauseSimulation();
   clearState();
   generation = 0;
   population = 0;
@@ -236,25 +242,23 @@ resetBtn?.addEventListener('click', () => {
 });
 
 randomBtn?.addEventListener('click', () => {
+  pauseSimulation();
   randomizeState();
   renderFrame();
   updatePopulation(true);
 });
 
-speedSlider?.addEventListener('input', () => {
-  const value = Number(speedSlider.value);
+speedInput?.addEventListener('input', () => {
+  const value = speedInput.valueAsNumber;
   if (Number.isFinite(value) && value > 0) {
     speed = value;
   }
 });
 
-zoomSlider?.addEventListener('input', () => {
-  const value = Number(zoomSlider.value);
-  if (Number.isFinite(value) && value >= 1) {
-    zoom = value;
-    updateCanvasSize();
-  }
-});
+widthField?.addEventListener('input', pauseSimulation);
+heightField?.addEventListener('input', pauseSimulation);
+randomDensitySlider?.addEventListener('input', pauseSimulation);
+styleModeSelect?.addEventListener('change', pauseSimulation);
 
 settingsToggle?.addEventListener('click', () => {
   settingsPanel?.classList.toggle('hidden');
@@ -266,6 +270,7 @@ settingsClose?.addEventListener('click', () => {
 
 settingsForm?.addEventListener('submit', (event) => {
   event.preventDefault();
+  pauseSimulation();
   const targetWidth = Math.max(16, Math.min(4096, Math.floor(Number(widthField?.value ?? gridWidth))));
   const targetHeight = Math.max(16, Math.min(4096, Math.floor(Number(heightField?.value ?? gridHeight))));
   resizeGrid(targetWidth, targetHeight);
@@ -393,10 +398,19 @@ function renderFrame() {
   gl.bindTexture(gl.TEXTURE_2D, stateTextures[currentIndex]);
   gl.uniform1i(renderUniforms.uState, 0);
   gl.uniform2i(renderUniforms.uGridSize, gridWidth, gridHeight);
-  gl.uniform1f(renderUniforms.uZoom, zoom);
+  gl.uniform1f(renderUniforms.uCellSize, CELL_SCALE);
   gl.uniform1f(renderUniforms.uPixelRatio, window.devicePixelRatio || 1);
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function pauseSimulation() {
+  if (!running) {
+    return;
+  }
+  running = false;
+  accumulator = 0;
+  updatePlayPauseVisual();
 }
 
 function updateHud() {
@@ -408,6 +422,17 @@ function updateHud() {
   }
   if (dimensionsLabel) {
     dimensionsLabel.textContent = `${gridWidth} × ${gridHeight}`;
+  }
+  refreshControlAvailability();
+}
+
+function refreshControlAvailability() {
+  if (playPauseBtn) {
+    const disabled = !running && population === 0;
+    playPauseBtn.disabled = disabled;
+  }
+  if (stepBtn) {
+    stepBtn.disabled = population === 0;
   }
 }
 
@@ -429,6 +454,9 @@ function updatePopulation(force = false) {
     sum += populationBuffer[i] > 127 ? 1 : 0;
   }
   population = sum;
+  if (population === 0 && running) {
+    pauseSimulation();
+  }
   updateHud();
 }
 
@@ -551,8 +579,8 @@ function resizeGrid(newWidth, newHeight) {
 
 function updateCanvasSize() {
   const ratio = window.devicePixelRatio || 1;
-  const displayWidth = Math.max(1, Math.floor(gridWidth * zoom));
-  const displayHeight = Math.max(1, Math.floor(gridHeight * zoom));
+  displayWidth = Math.max(1, Math.floor(gridWidth * CELL_SCALE));
+  displayHeight = Math.max(1, Math.floor(gridHeight * CELL_SCALE));
   canvas.style.width = `${displayWidth}px`;
   canvas.style.height = `${displayHeight}px`;
   canvas.width = Math.max(1, Math.floor(displayWidth * ratio));
@@ -560,7 +588,7 @@ function updateCanvasSize() {
   gl.viewport(0, 0, canvas.width, canvas.height);
 
   gl.useProgram(renderProgram);
-  gl.uniform1f(renderUniforms.uZoom, zoom);
+  gl.uniform1f(renderUniforms.uCellSize, CELL_SCALE);
   gl.uniform1f(renderUniforms.uPixelRatio, ratio);
   gl.uniform2i(renderUniforms.uGridSize, gridWidth, gridHeight);
 
@@ -574,6 +602,17 @@ function updatePlayPauseVisual() {
   }
   playPauseBtn.textContent = running ? '⏸️' : '▶️';
   playPauseBtn.setAttribute('aria-pressed', running ? 'true' : 'false');
+  if (running) {
+    playPauseBtn.title = 'Mettre en pause';
+    playPauseBtn.setAttribute('aria-label', 'Mettre en pause la simulation');
+  } else if (population === 0) {
+    playPauseBtn.title = 'Ajoutez des cellules pour démarrer';
+    playPauseBtn.setAttribute('aria-label', 'Ajoutez des cellules pour démarrer la simulation');
+  } else {
+    playPauseBtn.title = 'Démarrer la simulation';
+    playPauseBtn.setAttribute('aria-label', 'Démarrer la simulation');
+  }
+  refreshControlAvailability();
 }
 
 function getCellFromEvent(event) {
@@ -583,9 +622,8 @@ function getCellFromEvent(event) {
   if (relX < 0 || relY < 0 || relX >= rect.width || relY >= rect.height) {
     return null;
   }
-  const col = Math.floor((relX / rect.width) * gridWidth);
-  let row = Math.floor((relY / rect.height) * gridHeight);
-  row = gridHeight - 1 - row;
+  const col = Math.min(gridWidth - 1, Math.max(0, Math.floor((relX / rect.width) * gridWidth)));
+  const row = Math.min(gridHeight - 1, Math.max(0, Math.floor((relY / rect.height) * gridHeight)));
   if (col < 0 || row < 0 || col >= gridWidth || row >= gridHeight) {
     return null;
   }
@@ -597,7 +635,8 @@ function readCell(x, y) {
   gl.readBuffer(gl.COLOR_ATTACHMENT0);
   const pixel = new Uint8Array(1);
   gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
-  gl.readPixels(x, y, 1, 1, gl.RED, gl.UNSIGNED_BYTE, pixel);
+  const storageY = gridHeight - 1 - y;
+  gl.readPixels(x, storageY, 1, 1, gl.RED, gl.UNSIGNED_BYTE, pixel);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   return pixel[0] > 127;
 }
@@ -607,9 +646,10 @@ function writeCell(x, y, value) {
   const data = new Uint8Array([pixelValue]);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.activeTexture(gl.TEXTURE0);
+  const storageY = gridHeight - 1 - y;
   for (let i = 0; i < stateTextures.length; i += 1) {
     gl.bindTexture(gl.TEXTURE_2D, stateTextures[i]);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, 1, 1, gl.RED, gl.UNSIGNED_BYTE, data);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, storageY, 1, 1, gl.RED, gl.UNSIGNED_BYTE, data);
   }
 }
 

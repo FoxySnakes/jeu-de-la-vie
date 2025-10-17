@@ -20,25 +20,22 @@ body {
   margin: 0;
   min-height: 100vh;
   background: var(--bg-color);
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
   color: var(--text);
-  overflow: hidden;
+  overflow: auto;
 }
 
 #app {
   position: relative;
-  width: 100%;
-  height: 100vh;
+  min-width: 100%;
+  min-height: 100vh;
+  display: inline-block;
 }
 
 canvas#world {
-  width: 100%;
-  height: 100%;
   display: block;
   background: transparent;
   cursor: crosshair;
+  max-width: none;
 }
 
 .glass {
@@ -51,9 +48,9 @@ canvas#world {
 
 .toolbar {
   position: absolute;
-  top: 2rem;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -82,7 +79,7 @@ canvas#world {
   transform: translateY(0) scale(0.98);
 }
 
-.slider-group,
+.input-group,
 .select-group {
   display: grid;
   gap: 0.2rem;
@@ -90,32 +87,26 @@ canvas#world {
   font-size: 0.7rem;
 }
 
-.slider-group input,
+.input-group input,
 .select-group select {
-  appearance: none;
   background: rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  height: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
   outline: none;
-  border: none;
-  cursor: pointer;
+  color: var(--text);
 }
 
-.slider-group input::-webkit-slider-thumb {
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 1px solid rgba(255, 255, 255, 0.35);
+.input-group input {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.08);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.slider-group input::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 1px solid rgba(255, 255, 255, 0.35);
+.input-group input:focus {
+  box-shadow: 0 0 0 2px rgba(110, 249, 255, 0.25);
+  transform: translateY(-1px);
 }
 
 .select-group select {
@@ -124,6 +115,7 @@ canvas#world {
   color: var(--text);
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
 }
 
 .label {
@@ -133,7 +125,7 @@ canvas#world {
 
 .hud {
   position: absolute;
-  bottom: 2rem;
+  top: 2rem;
   left: 2rem;
   padding: 1rem 1.5rem;
   display: grid;
@@ -150,7 +142,7 @@ canvas#world {
 .settings {
   position: absolute;
   right: 2rem;
-  top: 6rem;
+  bottom: 2rem;
   width: min(320px, 90vw);
   padding: 1.5rem;
   display: grid;
@@ -235,20 +227,21 @@ canvas#world {
 
 @media (max-width: 900px) {
   .toolbar {
-    top: 1rem;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
     flex-wrap: wrap;
     justify-content: center;
   }
 
   .hud {
-    bottom: 1rem;
+    top: 1rem;
     left: 1rem;
   }
 
   .settings {
     right: 1rem;
-    top: auto;
-    bottom: 5rem;
+    bottom: 1rem;
   }
 }
 
@@ -260,6 +253,7 @@ canvas#world {
   .toolbar {
     width: calc(100% - 2rem);
     left: 1rem;
-    transform: none;
+    right: 1rem;
+    transform: translateY(-50%);
   }
 }
