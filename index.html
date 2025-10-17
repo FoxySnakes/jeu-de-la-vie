@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jeu de la Vie - Canvas</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <canvas id="world" aria-label="Grille du Jeu de la Vie" role="img"></canvas>
+    <div class="toolbar glass" aria-label="Outils de simulation">
+      <button id="play-pause" class="icon-button" title="Démarrer / Mettre en pause">▶️</button>
+      <button id="step" class="icon-button" title="Avancer d'une génération">⏭️</button>
+      <button id="reset" class="icon-button" title="Réinitialiser la grille">🔄</button>
+      <button id="random" class="icon-button" title="Remplissage aléatoire">✨</button>
+      <div class="slider-group" title="Vitesse de simulation">
+        <label for="speed" class="label">Vitesse</label>
+        <input id="speed" type="range" min="1" max="120" value="30">
+      </div>
+      <div class="slider-group" title="Zoom">
+        <label for="zoom" class="label">Zoom</label>
+        <input id="zoom" type="range" min="1" max="80" value="10">
+      </div>
+      <div class="select-group" title="Charger un motif">
+        <label for="pattern" class="label">Motif</label>
+        <select id="pattern">
+          <option value="">Aucun</option>
+        </select>
+      </div>
+      <button id="settings-toggle" class="icon-button" title="Afficher les paramètres">⚙️</button>
+    </div>
+    <div id="hud" class="hud glass">
+      <div>Génération : <span id="generation">0</span></div>
+      <div>Cellules vivantes : <span id="population">0</span></div>
+      <div>Dimensions : <span id="dimensions"></span></div>
+    </div>
+    <div id="settings-panel" class="settings glass hidden">
+      <h2>Paramètres</h2>
+      <form id="settings-form">
+        <label class="field">
+          <span>Largeur</span>
+          <input type="number" id="grid-width" min="16" max="4096" value="512">
+        </label>
+        <label class="field">
+          <span>Hauteur</span>
+          <input type="number" id="grid-height" min="16" max="4096" value="512">
+        </label>
+        <label class="field">
+          <span>Densité aléatoire</span>
+          <input type="range" id="random-density" min="0" max="100" value="30">
+        </label>
+        <label class="field">
+          <span>Style d'effet</span>
+          <select id="style-mode">
+            <option value="neon">Néon</option>
+            <option value="soft">Doux</option>
+            <option value="mono">Monochrome</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button type="submit" class="primary">Appliquer</button>
+          <button type="button" id="settings-close" class="ghost">Fermer</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
