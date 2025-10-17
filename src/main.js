@@ -1,224 +1,748 @@
-import { GameOfLifeWebGL } from './gameOfLifeWebGL.js';
+const GRID_WIDTH = 512;
+const GRID_HEIGHT = 512;
+const DEFAULT_SPEED = 30;
+const DEFAULT_CELL_SIZE = 10;
+const POPULATION_UPDATE_INTERVAL = 10;
 
-const STORAGE_KEY = 'gol-webgl-settings';
-const DEFAULT_SETTINGS = {
-  width: 512,
-  height: 512,
-  speed: 30,
-};
-
-const numberFormatter = new Intl.NumberFormat('fr-FR');
-
-function loadSettings() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return { ...DEFAULT_SETTINGS };
-    }
-    const parsed = JSON.parse(raw);
-    return {
-      width: Math.max(16, Math.floor(parsed.width || DEFAULT_SETTINGS.width)),
-      height: Math.max(16, Math.floor(parsed.height || DEFAULT_SETTINGS.height)),
-      speed: Math.max(0.1, Number(parsed.speed) || DEFAULT_SETTINGS.speed),
-    };
-  } catch (error) {
-    console.warn('Impossible de charger les paramètres, utilisation des valeurs par défaut.', error);
-    return { ...DEFAULT_SETTINGS };
-  }
+const canvas = document.getElementById('world');
+if (!canvas) {
+  throw new Error('Canvas element #world introuvable.');
 }
 
-function saveSettings(settings) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-  } catch (error) {
-    console.warn('Impossible de sauvegarder les paramètres.', error);
-  }
+canvas.style.imageRendering = 'pixelated';
+canvas.style.backgroundColor = '#0a0f25';
+
+const gl = canvas.getContext('webgl2', {
+  antialias: false,
+  depth: false,
+  stencil: false,
+  premultipliedAlpha: false,
+  preserveDrawingBuffer: false,
+});
+
+if (!gl) {
+  throw new Error('WebGL2 est requis pour cette application.');
 }
 
-function ensureCanvas() {
-  let canvas = document.getElementById('gameCanvas');
-  if (canvas) {
-    return canvas;
+gl.disable(gl.DEPTH_TEST);
+gl.disable(gl.STENCIL_TEST);
+gl.disable(gl.BLEND);
+gl.clearColor(0.039, 0.059, 0.145, 1.0);
+
+const playPauseBtn = document.getElementById('play-pause');
+const stepBtn = document.getElementById('step');
+const resetBtn = document.getElementById('reset');
+const randomBtn = document.getElementById('random');
+const speedInput = document.getElementById('speed');
+const generationLabel = document.getElementById('generation');
+const populationLabel = document.getElementById('population');
+const dimensionsLabel = document.getElementById('dimensions');
+const settingsToggle = document.getElementById('settings-toggle');
+const settingsPanel = document.getElementById('settings-panel');
+const settingsForm = document.getElementById('settings-form');
+const settingsClose = document.getElementById('settings-close');
+const widthField = document.getElementById('grid-width');
+const heightField = document.getElementById('grid-height');
+const cellSizeField = document.getElementById('cell-size');
+const randomDensitySlider = document.getElementById('random-density');
+const styleModeSelect = document.getElementById('style-mode');
+
+const quadVao = createFullscreenQuad();
+
+const vertexShaderSource = `#version 300 es
+layout(location = 0) in vec2 aPosition;
+void main() {
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}`;
+
+const simulationFragmentSource = `#version 300 es
+precision highp float;
+
+uniform sampler2D uState;
+uniform ivec2 uGridSize;
+
+layout(location = 0) out vec4 fragColor;
+
+int aliveAt(ivec2 coord) {
+  if (coord.x < 0 || coord.y < 0 || coord.x >= uGridSize.x || coord.y >= uGridSize.y) {
+    return 0;
   }
-  canvas = document.createElement('canvas');
-  canvas.id = 'gameCanvas';
-  canvas.setAttribute('role', 'img');
-  canvas.setAttribute('aria-label', 'Jeu de la Vie de Conway');
-  const container = document.querySelector('#canvasContainer, .canvas-container, main, #app, body');
-  (container || document.body).prepend(canvas);
-  return canvas;
+  float value = texelFetch(uState, coord, 0).r;
+  return int(value + 0.5);
 }
 
-function updateButtonState(button, active) {
-  if (!button) return;
-  if (typeof button.classList?.toggle === 'function') {
-    button.classList.toggle('is-active', Boolean(active));
+void main() {
+  ivec2 cell = ivec2(gl_FragCoord.xy) - ivec2(0);
+
+  int neighbors = 0;
+  neighbors += aliveAt(cell + ivec2(-1, -1));
+  neighbors += aliveAt(cell + ivec2(0, -1));
+  neighbors += aliveAt(cell + ivec2(1, -1));
+  neighbors += aliveAt(cell + ivec2(-1, 0));
+  neighbors += aliveAt(cell + ivec2(1, 0));
+  neighbors += aliveAt(cell + ivec2(-1, 1));
+  neighbors += aliveAt(cell + ivec2(0, 1));
+  neighbors += aliveAt(cell + ivec2(1, 1));
+
+  int current = aliveAt(cell);
+  int nextState = 0;
+  if (current == 1) {
+    nextState = (neighbors == 2 || neighbors == 3) ? 1 : 0;
+  } else {
+    nextState = (neighbors == 3) ? 1 : 0;
   }
+
+  fragColor = vec4(float(nextState), 0.0, 0.0, 1.0);
+}`;
+
+const renderFragmentSource = `#version 300 es
+precision highp float;
+
+uniform sampler2D uState;
+uniform ivec2 uGridSize;
+uniform float uCellSize;
+uniform float uPixelRatio;
+
+layout(location = 0) out vec4 fragColor;
+
+const vec3 BACKGROUND = vec3(0.039, 0.059, 0.145);
+const vec3 GRID_LINE = vec3(0.075, 0.118, 0.27);
+const vec3 NEON_CORE = vec3(0.86, 0.47, 1.0);
+const vec3 NEON_EDGE = vec3(0.34, 0.23, 0.94);
+const vec3 NEON_HALO = vec3(0.18, 0.42, 0.96);
+
+float gridMask(vec2 uv, float thickness) {
+  vec2 dist = min(uv, 1.0 - uv);
+  float edge = min(dist.x, dist.y);
+  return smoothstep(thickness, thickness * 1.5, edge);
 }
 
-function attachUi(game, settings) {
-  const startBtn = document.getElementById('startBtn');
-  const pauseBtn = document.getElementById('pauseBtn');
-  const widthInput = document.getElementById('width');
-  const heightInput = document.getElementById('height');
-  const speedInput = document.getElementById('speed');
-  const statsGeneration = document.getElementById('statsGeneration');
-  const statsAlive = document.getElementById('statsAlive');
-  const statsDimensions = document.getElementById('statsDimensions');
-
-  const stats = {
-    generation: statsGeneration,
-    alive: statsAlive,
-    dimensions: statsDimensions,
-  };
-
-  const updateStats = ({ generation, alive, rows, cols }) => {
-    if (stats.generation) {
-      stats.generation.textContent = numberFormatter.format(generation);
-    }
-    if (stats.alive) {
-      stats.alive.textContent = numberFormatter.format(alive);
-    }
-    if (stats.dimensions) {
-      stats.dimensions.textContent = `${numberFormatter.format(cols)} × ${numberFormatter.format(rows)}`;
-    }
-  };
-
-  game.setStatsCallback(updateStats);
-  updateStats({ generation: game.generation || 0, alive: game.aliveCount || 0, rows: game.rows, cols: game.cols });
-
-  if (widthInput) {
-    widthInput.value = settings.width;
-    widthInput.addEventListener('change', () => {
-      const value = Number(widthInput.value);
-      if (!Number.isFinite(value)) {
-        widthInput.value = game.cols;
-        return;
-      }
-      const clamped = Math.max(16, Math.min(4096, Math.floor(value)));
-      widthInput.value = clamped;
-      settings.width = clamped;
-      game.resize(game.rows, clamped);
-      saveSettings({ width: game.cols, height: game.rows, speed: game.speed });
-    });
-  }
-
-  if (heightInput) {
-    heightInput.value = settings.height;
-    heightInput.addEventListener('change', () => {
-      const value = Number(heightInput.value);
-      if (!Number.isFinite(value)) {
-        heightInput.value = game.rows;
-        return;
-      }
-      const clamped = Math.max(16, Math.min(4096, Math.floor(value)));
-      heightInput.value = clamped;
-      settings.height = clamped;
-      game.resize(clamped, game.cols);
-      saveSettings({ width: game.cols, height: game.rows, speed: game.speed });
-    });
-  }
-
-  if (speedInput) {
-    speedInput.value = settings.speed;
-    speedInput.addEventListener('input', () => {
-      const value = Number(speedInput.value);
-      if (!Number.isFinite(value)) {
-        return;
-      }
-      const normalized = Math.max(0.1, Number(value));
-      game.setSpeed(normalized);
-      settings.speed = normalized;
-      saveSettings({ width: game.cols, height: game.rows, speed: normalized });
-    });
-  }
-
-  if (startBtn) {
-    startBtn.addEventListener('click', () => {
-      game.start();
-      updateButtonState(startBtn, true);
-      updateButtonState(pauseBtn, false);
-    });
-  }
-
-  if (pauseBtn) {
-    pauseBtn.addEventListener('click', () => {
-      game.pause();
-      updateButtonState(startBtn, false);
-      updateButtonState(pauseBtn, true);
-    });
-  }
-
-  const handlePointer = (event) => {
-    if (game.failed) return;
-    const rect = game.canvas.getBoundingClientRect();
-    const offsetX = event.clientX - rect.left;
-    const offsetY = event.clientY - rect.top;
-    if (offsetX < 0 || offsetY < 0 || offsetX > rect.width || offsetY > rect.height) {
-      return;
-    }
-    const col = Math.floor((offsetX / rect.width) * game.cols);
-    const row = Math.floor((offsetY / rect.height) * game.rows);
-    game.toggleCell(col, row);
-  };
-
-  game.canvas.addEventListener('pointerdown', (event) => {
-    if (typeof event.button === 'number' && event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    handlePointer(event);
-  });
-  game.canvas.addEventListener('contextmenu', (event) => {
-    event.preventDefault();
-  });
-
-  document.addEventListener('keydown', (event) => {
-    if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
-      return;
-    }
-    if (event.key === 'r' || event.key === 'R') {
-      event.preventDefault();
-      game.randomize();
-    } else if (event.key === 'w' || event.key === 'W') {
-      event.preventDefault();
-      game.clear();
-    }
-  });
-
-  updateButtonState(startBtn, game.isRunning());
-  updateButtonState(pauseBtn, !game.isRunning());
-}
-
-function showWebglError(canvas, error) {
-  const message = document.createElement('div');
-  message.textContent = `WebGL2 indisponible : ${error.message || error}`;
-  message.style.padding = '1rem';
-  message.style.textAlign = 'center';
-  message.style.color = '#ff9aa2';
-  message.style.fontWeight = '600';
-  canvas.replaceWith(message);
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const canvas = ensureCanvas();
-  canvas.style.imageRendering = 'pixelated';
-  canvas.style.touchAction = 'none';
-
-  const settings = loadSettings();
-  const game = new GameOfLifeWebGL(canvas, {
-    rows: settings.height,
-    cols: settings.width,
-    speed: settings.speed,
-    onStats: () => {},
-    onError: (error) => showWebglError(canvas, error),
-  });
-
-  if (!game.gl || game.failed) {
+void main() {
+  vec2 pixel = gl_FragCoord.xy / uPixelRatio;
+  vec2 cellPos = pixel / max(uCellSize, 0.0001);
+  ivec2 cell = ivec2(floor(cellPos));
+  if (cell.x < 0 || cell.y < 0 || cell.x >= uGridSize.x || cell.y >= uGridSize.y) {
+    fragColor = vec4(BACKGROUND, 1.0);
     return;
   }
 
-  const currentSettings = { width: game.cols, height: game.rows, speed: game.speed };
-  saveSettings(currentSettings);
-  attachUi(game, currentSettings);
+  ivec2 storageCoord = ivec2(cell);
+  float state = texelFetch(uState, storageCoord, 0).r;
+  vec2 uv = fract(cellPos);
+  float thickness = clamp(1.0 / max(uCellSize, 1.0), 0.01, 0.12);
+  float grid = gridMask(uv, thickness);
+  vec3 color = mix(GRID_LINE, BACKGROUND, grid);
+
+  if (state > 0.5) {
+    vec2 centered = uv - 0.5;
+    float dist = length(centered);
+    float glowCore = smoothstep(0.45, 0.0, dist);
+    float glowHalo = smoothstep(0.8, 0.0, dist);
+    vec3 neon = mix(NEON_EDGE, NEON_CORE, glowCore);
+    color = mix(color, neon, glowCore);
+    color += NEON_HALO * pow(glowHalo, 2.0);
+  }
+
+  fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+}`;
+
+const simulationProgram = createProgram(vertexShaderSource, simulationFragmentSource);
+const renderProgram = createProgram(vertexShaderSource, renderFragmentSource);
+
+const simUniforms = {
+  uState: gl.getUniformLocation(simulationProgram, 'uState'),
+  uGridSize: gl.getUniformLocation(simulationProgram, 'uGridSize'),
+};
+
+const renderUniforms = {
+  uState: gl.getUniformLocation(renderProgram, 'uState'),
+  uGridSize: gl.getUniformLocation(renderProgram, 'uGridSize'),
+  uCellSize: gl.getUniformLocation(renderProgram, 'uCellSize'),
+  uPixelRatio: gl.getUniformLocation(renderProgram, 'uPixelRatio'),
+};
+
+let gridWidth = GRID_WIDTH;
+let gridHeight = GRID_HEIGHT;
+let speed = DEFAULT_SPEED;
+let cellSize = DEFAULT_CELL_SIZE;
+let running = false;
+let generation = 0;
+let population = 0;
+let frameCounter = 0;
+let accumulator = 0;
+let lastFrameTime = performance.now();
+
+let displayWidth = GRID_WIDTH * DEFAULT_CELL_SIZE;
+let displayHeight = GRID_HEIGHT * DEFAULT_CELL_SIZE;
+
+let stateTextures = [];
+let stateFramebuffers = [];
+let populationBuffer = new Uint8Array(gridWidth * gridHeight);
+let currentIndex = 0;
+let nextIndex = 1;
+
+initializeStateResources(gridWidth, gridHeight);
+updateCanvasSize();
+updateHud();
+
+if (dimensionsLabel) {
+  dimensionsLabel.textContent = `${gridWidth} × ${gridHeight}`;
+}
+
+if (speedInput) {
+  speedInput.value = String(DEFAULT_SPEED);
+}
+
+if (widthField) {
+  widthField.value = String(gridWidth);
+}
+
+if (heightField) {
+  heightField.value = String(gridHeight);
+}
+
+if (cellSizeField) {
+  cellSizeField.value = String(cellSize);
+}
+
+if (randomDensitySlider) {
+  randomDensitySlider.value = String(30);
+}
+
+if (settingsPanel) {
+  settingsPanel.classList.add('hidden');
+}
+
+playPauseBtn?.addEventListener('click', () => {
+  if (!running && population === 0) {
+    return;
+  }
+  running = !running;
+  if (running) {
+    lastFrameTime = performance.now();
+  } else {
+    accumulator = 0;
+  }
+  updatePlayPauseVisual();
 });
+
+stepBtn?.addEventListener('click', () => {
+  if (population === 0) {
+    return;
+  }
+  if (running) {
+    pauseSimulation();
+  }
+  performSimulationStep();
+  renderFrame();
+  updatePopulation(true);
+});
+
+resetBtn?.addEventListener('click', () => {
+  pauseSimulation();
+  clearState();
+  generation = 0;
+  population = 0;
+  updateHud();
+  updatePlayPauseVisual();
+  renderFrame();
+});
+
+randomBtn?.addEventListener('click', () => {
+  pauseSimulation();
+  randomizeState();
+  renderFrame();
+  updatePopulation(true);
+});
+
+speedInput?.addEventListener('input', () => {
+  const value = speedInput.valueAsNumber;
+  if (Number.isFinite(value) && value > 0) {
+    speed = value;
+  }
+});
+
+widthField?.addEventListener('input', pauseSimulation);
+heightField?.addEventListener('input', pauseSimulation);
+cellSizeField?.addEventListener('input', pauseSimulation);
+randomDensitySlider?.addEventListener('input', pauseSimulation);
+styleModeSelect?.addEventListener('change', pauseSimulation);
+
+settingsToggle?.addEventListener('click', () => {
+  settingsPanel?.classList.toggle('hidden');
+});
+
+settingsClose?.addEventListener('click', () => {
+  settingsPanel?.classList.add('hidden');
+});
+
+settingsForm?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  pauseSimulation();
+  const targetWidth = Math.max(16, Math.min(4096, Math.floor(Number(widthField?.value ?? gridWidth))));
+  const targetHeight = Math.max(16, Math.min(4096, Math.floor(Number(heightField?.value ?? gridHeight))));
+  const targetCellSize = Math.max(1, Math.min(128, Math.floor(Number(cellSizeField?.value ?? cellSize))));
+  applyGridSettings(targetWidth, targetHeight, targetCellSize);
+  settingsPanel?.classList.add('hidden');
+});
+
+canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+canvas.style.touchAction = 'none';
+
+let pointerActive = false;
+let pointerWriteValue = 1;
+
+canvas.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0 && event.pointerType !== 'touch') {
+    return;
+  }
+  const coords = getCellFromEvent(event);
+  if (!coords) {
+    return;
+  }
+  event.preventDefault();
+  canvas.setPointerCapture(event.pointerId);
+  pointerActive = true;
+  const currentState = readCell(coords.x, coords.y);
+  pointerWriteValue = currentState ? 0 : 1;
+  writeCell(coords.x, coords.y, pointerWriteValue);
+  renderFrame();
+  updatePopulation(true);
+});
+
+canvas.addEventListener('pointermove', (event) => {
+  if (!pointerActive) {
+    return;
+  }
+  event.preventDefault();
+  const coords = getCellFromEvent(event);
+  if (!coords) {
+    return;
+  }
+  writeCell(coords.x, coords.y, pointerWriteValue);
+  renderFrame();
+});
+
+canvas.addEventListener('pointerup', (event) => {
+  if (!pointerActive) {
+    return;
+  }
+  if (event.pointerType !== 'touch' && event.button !== 0) {
+    return;
+  }
+  pointerActive = false;
+  canvas.releasePointerCapture(event.pointerId);
+  updatePopulation(true);
+});
+
+canvas.addEventListener('pointercancel', (event) => {
+  if (!pointerActive) {
+    return;
+  }
+  pointerActive = false;
+  canvas.releasePointerCapture(event.pointerId);
+  updatePopulation(true);
+});
+
+window.addEventListener('resize', () => {
+  updateCanvasSize();
+});
+
+updatePlayPauseVisual();
+renderFrame();
+requestAnimationFrame(frameLoop);
+
+function frameLoop(now) {
+  const delta = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+
+  if (running) {
+    const stepDuration = 1 / speed;
+    accumulator += Math.min(delta, 0.25);
+    while (accumulator >= stepDuration) {
+      performSimulationStep();
+      accumulator -= stepDuration;
+    }
+  }
+
+  renderFrame();
+
+  frameCounter += 1;
+  if (frameCounter >= POPULATION_UPDATE_INTERVAL) {
+    updatePopulation(false);
+    frameCounter = 0;
+  }
+
+  requestAnimationFrame(frameLoop);
+}
+
+function performSimulationStep() {
+  gl.useProgram(simulationProgram);
+  gl.bindVertexArray(quadVao);
+  gl.viewport(0, 0, gridWidth, gridHeight);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, stateFramebuffers[nextIndex]);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, stateTextures[currentIndex]);
+  gl.uniform1i(simUniforms.uState, 0);
+  gl.uniform2i(simUniforms.uGridSize, gridWidth, gridHeight);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  const temp = currentIndex;
+  currentIndex = nextIndex;
+  nextIndex = temp;
+  generation += 1;
+  updateHud();
+}
+
+function renderFrame() {
+  gl.useProgram(renderProgram);
+  gl.bindVertexArray(quadVao);
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, stateTextures[currentIndex]);
+  gl.uniform1i(renderUniforms.uState, 0);
+  gl.uniform2i(renderUniforms.uGridSize, gridWidth, gridHeight);
+  gl.uniform1f(renderUniforms.uCellSize, cellSize);
+  gl.uniform1f(renderUniforms.uPixelRatio, window.devicePixelRatio || 1);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function pauseSimulation() {
+  if (!running) {
+    return;
+  }
+  running = false;
+  accumulator = 0;
+  updatePlayPauseVisual();
+}
+
+function updateHud() {
+  if (generationLabel) {
+    generationLabel.textContent = String(generation);
+  }
+  if (populationLabel) {
+    populationLabel.textContent = String(population);
+  }
+  if (dimensionsLabel) {
+    dimensionsLabel.textContent = `${gridWidth} × ${gridHeight}`;
+  }
+  refreshControlAvailability();
+}
+
+function refreshControlAvailability() {
+  if (playPauseBtn) {
+    const disabled = !running && population === 0;
+    playPauseBtn.disabled = disabled;
+  }
+  if (stepBtn) {
+    stepBtn.disabled = population === 0;
+  }
+}
+
+function updatePopulation(force = false) {
+  if (force) {
+    frameCounter = 0;
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, stateFramebuffers[currentIndex]);
+  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  if (populationBuffer.length !== gridWidth * gridHeight) {
+    populationBuffer = new Uint8Array(gridWidth * gridHeight);
+  }
+  gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+  gl.readPixels(0, 0, gridWidth, gridHeight, gl.RED, gl.UNSIGNED_BYTE, populationBuffer);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  let sum = 0;
+  for (let i = 0; i < populationBuffer.length; i += 1) {
+    sum += populationBuffer[i] > 127 ? 1 : 0;
+  }
+  population = sum;
+  if (population === 0 && running) {
+    pauseSimulation();
+  }
+  updateHud();
+  updatePlayPauseVisual();
+}
+
+function clearState() {
+  const empty = new Uint8Array(gridWidth * gridHeight);
+  uploadState(empty);
+}
+
+function randomizeState() {
+  const densitySlider = randomDensitySlider ? Number(randomDensitySlider.value) : NaN;
+  let density;
+  if (Number.isFinite(densitySlider) && densitySlider >= 0 && densitySlider <= 100) {
+    density = Math.max(20, Math.min(60, densitySlider)) / 100;
+  } else {
+    density = 0.2 + Math.random() * 0.4;
+  }
+  const data = new Uint8Array(gridWidth * gridHeight);
+  for (let i = 0; i < data.length; i += 1) {
+    data[i] = Math.random() < density ? 255 : 0;
+  }
+  uploadState(data);
+  generation = 0;
+  updateHud();
+}
+
+function uploadState(data) {
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.activeTexture(gl.TEXTURE0);
+  for (let i = 0; i < stateTextures.length; i += 1) {
+    gl.bindTexture(gl.TEXTURE_2D, stateTextures[i]);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gridWidth, gridHeight, gl.RED, gl.UNSIGNED_BYTE, data);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, stateTextures[currentIndex]);
+}
+
+function createStateResources(width, height) {
+  const textures = [];
+  const framebuffers = [];
+  for (let i = 0; i < 2; i += 1) {
+    const texture = gl.createTexture();
+    if (!texture) {
+      throw new Error('Impossible de créer la texture de simulation.');
+    }
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, width, height, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+
+    const framebuffer = gl.createFramebuffer();
+    if (!framebuffer) {
+      throw new Error('Impossible de créer le framebuffer de simulation.');
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('Framebuffer incomplet pour la simulation.');
+    }
+
+    textures.push(texture);
+    framebuffers.push(framebuffer);
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return { textures, framebuffers };
+}
+
+function initializeStateResources(width, height) {
+  if (stateTextures.length) {
+    for (const tex of stateTextures) {
+      gl.deleteTexture(tex);
+    }
+  }
+  if (stateFramebuffers.length) {
+    for (const fb of stateFramebuffers) {
+      gl.deleteFramebuffer(fb);
+    }
+  }
+
+  const resources = createStateResources(width, height);
+  stateTextures = resources.textures;
+  stateFramebuffers = resources.framebuffers;
+  currentIndex = 0;
+  nextIndex = 1;
+  const empty = new Uint8Array(width * height);
+  uploadState(empty);
+}
+
+function applyGridSettings(newWidth, newHeight, newCellSize) {
+  const targetWidth = Math.max(16, Math.min(4096, newWidth));
+  const targetHeight = Math.max(16, Math.min(4096, newHeight));
+  const targetCellSize = Math.max(1, Math.min(128, newCellSize));
+
+  const widthChanged = targetWidth !== gridWidth;
+  const heightChanged = targetHeight !== gridHeight;
+  const cellSizeChanged = targetCellSize !== cellSize;
+
+  if (!widthChanged && !heightChanged && !cellSizeChanged) {
+    return;
+  }
+
+  if (widthChanged || heightChanged) {
+    gridWidth = targetWidth;
+    gridHeight = targetHeight;
+    populationBuffer = new Uint8Array(gridWidth * gridHeight);
+    initializeStateResources(gridWidth, gridHeight);
+
+    gl.useProgram(simulationProgram);
+    gl.uniform2i(simUniforms.uGridSize, gridWidth, gridHeight);
+    gl.useProgram(renderProgram);
+    gl.uniform2i(renderUniforms.uGridSize, gridWidth, gridHeight);
+
+    generation = 0;
+    population = 0;
+    accumulator = 0;
+  }
+
+  if (cellSizeChanged) {
+    cellSize = targetCellSize;
+  }
+
+  updateCanvasSize();
+  updateHud();
+
+  if (widthField) {
+    widthField.value = String(gridWidth);
+  }
+  if (heightField) {
+    heightField.value = String(gridHeight);
+  }
+  if (cellSizeField) {
+    cellSizeField.value = String(cellSize);
+  }
+
+  updatePlayPauseVisual();
+  renderFrame();
+  updatePopulation(true);
+}
+
+function updateCanvasSize() {
+  const ratio = window.devicePixelRatio || 1;
+  displayWidth = Math.max(1, Math.floor(gridWidth * cellSize));
+  displayHeight = Math.max(1, Math.floor(gridHeight * cellSize));
+  canvas.style.width = `${displayWidth}px`;
+  canvas.style.height = `${displayHeight}px`;
+  canvas.width = Math.max(1, Math.floor(displayWidth * ratio));
+  canvas.height = Math.max(1, Math.floor(displayHeight * ratio));
+  gl.viewport(0, 0, canvas.width, canvas.height);
+
+  gl.useProgram(renderProgram);
+  gl.uniform1f(renderUniforms.uCellSize, cellSize);
+  gl.uniform1f(renderUniforms.uPixelRatio, ratio);
+  gl.uniform2i(renderUniforms.uGridSize, gridWidth, gridHeight);
+
+  gl.useProgram(simulationProgram);
+  gl.uniform2i(simUniforms.uGridSize, gridWidth, gridHeight);
+}
+
+function updatePlayPauseVisual() {
+  if (!playPauseBtn) {
+    return;
+  }
+  playPauseBtn.textContent = running ? '⏸️' : '▶️';
+  playPauseBtn.setAttribute('aria-pressed', running ? 'true' : 'false');
+  if (running) {
+    playPauseBtn.title = 'Mettre en pause';
+    playPauseBtn.setAttribute('aria-label', 'Mettre en pause la simulation');
+  } else if (population === 0) {
+    playPauseBtn.title = 'Ajoutez des cellules pour démarrer';
+    playPauseBtn.setAttribute('aria-label', 'Ajoutez des cellules pour démarrer la simulation');
+  } else {
+    playPauseBtn.title = 'Démarrer la simulation';
+    playPauseBtn.setAttribute('aria-label', 'Démarrer la simulation');
+  }
+  refreshControlAvailability();
+}
+
+function getCellFromEvent(event) {
+  const rect = canvas.getBoundingClientRect();
+  const relX = event.clientX - rect.left;
+  const relY = event.clientY - rect.top;
+  if (relX < 0 || relY < 0 || relX >= rect.width || relY >= rect.height) {
+    return null;
+  }
+  const normalizedX = relX / rect.width;
+  const normalizedY = relY / rect.height;
+  const col = Math.min(gridWidth - 1, Math.max(0, Math.floor(normalizedX * gridWidth)));
+  const row = Math.min(
+    gridHeight - 1,
+    Math.max(0, Math.floor((1 - normalizedY) * gridHeight)),
+  );
+  if (col < 0 || row < 0 || col >= gridWidth || row >= gridHeight) {
+    return null;
+  }
+  return { x: col, y: row };
+}
+
+function readCell(x, y) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, stateFramebuffers[currentIndex]);
+  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  const pixel = new Uint8Array(1);
+  gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+  gl.readPixels(x, y, 1, 1, gl.RED, gl.UNSIGNED_BYTE, pixel);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return pixel[0] > 127;
+}
+
+function writeCell(x, y, value) {
+  const pixelValue = value ? 255 : 0;
+  const data = new Uint8Array([pixelValue]);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.activeTexture(gl.TEXTURE0);
+  for (let i = 0; i < stateTextures.length; i += 1) {
+    gl.bindTexture(gl.TEXTURE_2D, stateTextures[i]);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, 1, 1, gl.RED, gl.UNSIGNED_BYTE, data);
+  }
+}
+
+function createFullscreenQuad() {
+  const vao = gl.createVertexArray();
+  const buffer = gl.createBuffer();
+  if (!vao || !buffer) {
+    throw new Error('Impossible de créer la géométrie du quad.');
+  }
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  const vertices = new Float32Array([
+    -1, -1,
+    1, -1,
+    -1, 1,
+    1, 1,
+  ]);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  return vao;
+}
+
+function createProgram(vertexSource, fragmentSource) {
+  const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+  const program = gl.createProgram();
+  if (!program) {
+    throw new Error('Impossible de créer le programme WebGL.');
+  }
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const info = gl.getProgramInfoLog(program);
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    gl.deleteProgram(program);
+    throw new Error(`Échec du linkage du programme : ${info}`);
+  }
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragmentShader);
+  return program;
+}
+
+function compileShader(type, source) {
+  const shader = gl.createShader(type);
+  if (!shader) {
+    throw new Error('Impossible de créer un shader.');
+  }
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const info = gl.getShaderInfoLog(shader);
+    gl.deleteShader(shader);
+    throw new Error(`Erreur de compilation du shader : ${info}`);
+  }
+  return shader;
+}
